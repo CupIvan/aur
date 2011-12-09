@@ -1,0 +1,139 @@
+#!/usr/bin/php
+<?php
+/**
+ * @author  CupIvan mail@cupivan.ru
+ * @license GPL
+ * @version 0.1
+ */
+
+if (count($_SERVER['argv']) == 1) exit;
+
+if ($_SERVER['argv'][1] == '--help')
+	die("Usage: aur [-u] [package1][:N] [package2] ...
+  -l         - list installed from AUR
+  -u         - update all packages
+  -u package - update package
+  [:N]       - choose N-th package in list
+");
+
+$CG = "\033[32;40m"; // зеленый цвет
+$CB = "\033[34;40m"; // синий цвет
+$CC = "\033[36;40m"; // циановый цвет
+$CR = "\033[31;40m"; // красный цвет
+$CN = "\033[0m";     // сброс цвета
+
+$check_installed = 1; $updateFlag = 0; $VER = '';
+
+if ($_SERVER['argv'][1] == '-l' && count($_SERVER['argv']) == 2)
+{
+	exec('pacman -Qqe | grep "$(pacman -Qmq)"', $res);
+	echo implode("\n", $res)."\n";
+	exit;
+}
+
+if ($_SERVER['argv'][1] == '-u' && count($_SERVER['argv']) == 2)
+{
+	exec('pacman -Qqe | grep "$(pacman -Qmq)"', $res);
+	array_unshift($res, '', '-u');
+	$_SERVER['argv'] = $res;
+}
+
+for ($i = 1; $i < count($_SERVER['argv']); $i++)
+	search($_SERVER['argv'][$i]);
+
+function search($x)
+{
+	global $CG, $CB, $CC, $CN, $check_installed, $updateFlag, $VER;
+
+	if ($x == '-u') return $updateFlag = 1;
+
+	$x = explode(':', $x);
+	$package = $x[0]; $n = @(int)$x[1];
+	$p = $package; if ($p == 'xorg') $p = 'xorg-server';
+
+	if ($check_installed && installed($p) && !$updateFlag) return;
+
+	// поиск в pacman
+	exec("pacman -Ss $p | grep '/$p '", $out);
+	if (isset($out[0]))
+	{
+		echo "Install from pacman...\n";
+		system("sudo pacman -S $package --noconfirm");
+		return;
+	}
+
+	echo "\nSearch $package...\n";
+	$page = file_get_contents("https://aur.archlinux.org/packages.php?K=$package&SB=v&SO=d");
+	if (!$page) { echo "error!\n"; return; }
+	// много результатов
+	if (preg_match_all('~'.
+		'ID=(?<id>\d+).>.+?'.
+		'>(?<name>\S+)'.
+		' (?<version>[^<]+).+?'.
+		'blue.>(?<rate>\d+).+?'.
+		'blue.>\s*(?<text>[^<]+)\s*~s', $page, $m, PREG_SET_ORDER))
+	{
+		echo "Found ".count($m)." results:\n";
+		$st = ''; $p = 0;
+		for ($i = 0; $i < count($m); $i++)
+		{
+			if ($i+1 == $n)
+			{
+				echo "Choose $n\n";
+				return install($m[$i]['name'], (int)$m[$i]['id']);
+			}
+			if ($m[$i]['name'] == $package) $p = $m[$i];
+			$name =  $CG.$m[$i]['name'].$CN.' ';
+			$vers =  $CC.$m[$i]['version'].$CN;
+			$rate = "$CB [".$m[$i]['rate']."]$CN";
+			$st  .= sprintf("%s%2d. %-70s %s\n", ($m[$i]['name']==$package)?'*':' ', $i+1, $name.$vers.$rate, $m[$i]['text']);
+		}
+		echo $st;
+		if ($p)
+		{
+			echo "Auto choose '$package'\n";
+			if ($p['version'] == $VER) { echo "Skip version $VER\n"; return; }
+			else echo "Update $VER -> ".$p['version']."...\n";
+			return install($p['name'], (int)$p['id']);
+		}
+	}
+	// один результат
+	if (preg_match('~/packages/.+?/(.+?)\.tar\.gz~', $page, $m))
+	install($m[1], $m[0]);
+}
+
+function install($name, $url)
+{
+	global $VER;
+	echo "Installing $name...\n";
+	if (is_integer($url))
+	{
+		echo "Downloading package info...\n";
+		$page = file_get_contents("http://aur.archlinux.org/packages.php?ID=$url");
+		if (!preg_match('~(?<url>/packages/.+?/(.+?)\.tar\.gz)~', $page, $m)) { echo "error!\n"; return; }
+		$url  = $m['url'];
+	}
+	echo "Downloading archive...\n";
+	$page = file_get_contents("https://aur.archlinux.org/$url");
+	if (!$page) { echo "error!\n"; return; }
+	echo "Start build...\n";
+	$dir = "/tmp/aur_php";
+	exec("rm -rf $dir; mkdir $dir");
+	file_put_contents("$dir/$name.tar.gz", $page);
+	passthru("cd $dir; tar -xzvf '$name.tar.gz'; cd '$name'; makepkg -si --noconfirm");
+}
+
+function installed($x)
+{
+	global $CG, $CR, $CN, $VER;
+
+	// поиск в установленных
+	exec("pacman -Q $x 2>/dev/null", $cmd);
+	$ret = 1;
+	if (!isset($cmd[0])) $ret = 0;
+	echo ($ret?$CG.$cmd[0]:$CR.$x)."$CN, ";
+	$VER = explode(' ', @$cmd[0]); $VER = @$VER[1];
+	return $ret;
+}
+
+echo "\n";
