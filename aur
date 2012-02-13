@@ -3,7 +3,7 @@
 /**
  * @author  CupIvan mail@cupivan.ru
  * @license GPL
- * @version 0.1
+ * @version 0.2
  */
 
 if (count($_SERVER['argv']) == 1) exit;
@@ -38,14 +38,21 @@ if ($_SERVER['argv'][1] == '-u' && count($_SERVER['argv']) == 2)
 	$_SERVER['argv'] = $res;
 }
 
+$GLOBALS['packages'] = array();
+
 for ($i = 1; $i < count($_SERVER['argv']); $i++)
-	search($_SERVER['argv'][$i]);
+{
+	$ret = search($_SERVER['argv'][$i]);
+	if (!$ret) $i--;
+}
 
 function search($x)
 {
 	global $CG, $CB, $CC, $CN, $check_installed, $updateFlag, $VER;
 
 	if ($x == '-u') return $updateFlag = 1;
+
+	$GLOBALS['packages'][$x] = 1; // отмечаем, что искали
 
 	$x = explode(':', $x);
 	$package = $x[0]; $n = @(int)$x[1];
@@ -59,7 +66,7 @@ function search($x)
 	{
 		echo "Install from pacman...\n";
 		system("sudo pacman -S $package --noconfirm");
-		return;
+		return 1;
 	}
 
 	echo "\nSearch $package...\n";
@@ -92,14 +99,15 @@ function search($x)
 		if ($p)
 		{
 			echo "Auto choose '$package'\n";
-			if ($p['version'] == $VER) { echo "Skip version $VER\n"; return; }
+			if ($p['version'] <= $VER) { echo "Skip version $VER\n"; return; }
 			else echo "Update $VER -> ".$p['version']."...\n";
 			return install($p['name'], (int)$p['id']);
 		}
 	}
 	// один результат
 	if (preg_match('~/packages/.+?/(.+?)\.tar\.gz~', $page, $m))
-	install($m[1], $m[0]);
+		return install($m[1], $m[0]);
+	return 1;
 }
 
 function install($name, $url)
@@ -120,7 +128,18 @@ function install($name, $url)
 	$dir = "/tmp/aur_php";
 	exec("rm -rf $dir; mkdir $dir");
 	file_put_contents("$dir/$name.tar.gz", $page);
-	passthru("cd $dir; tar -xzvf '$name.tar.gz'; cd '$name'; makepkg -si --noconfirm");
+	passthru("cd $dir; tar -xzvf '$name.tar.gz'; cd '$name'; makepkg -si --noconfirm 2>/tmp/aur.log");
+	$log = file_get_contents('/tmp/aur.log');
+	echo "!!$log!!";
+	if (preg_match_all('/target not found: ([a-z-]+)/i', $log, $m))
+	{
+		$ret = 1;
+		foreach ($m[1] as $package)
+			if (!isset($GLOBALS['packages'][$package]))
+				$ret = search($package);
+		return $ret;
+	}
+	return 0;
 }
 
 function installed($x)
